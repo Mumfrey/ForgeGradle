@@ -23,8 +23,18 @@ import net.minecraftforge.gradle.user.UserBaseExtension;
 
 public class LiteloaderExtension extends UserBaseExtension
 {
+    private final LiteloaderPlugin plugin;
+    
     public LiteloaderExtension(LiteloaderPlugin plugin)
     {
         super(plugin);
+        this.plugin = plugin;
+    }
+    
+    @Override
+    public void setVersion(String version)
+    {
+        super.setVersion(version);
+        this.plugin.applyAndCheckJson();
     }
 }

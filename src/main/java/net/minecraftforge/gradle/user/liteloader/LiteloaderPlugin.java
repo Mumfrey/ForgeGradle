@@ -49,16 +49,12 @@ import java.util.Map;
 
 public class LiteloaderPlugin extends UserVanillaBasePlugin<LiteloaderExtension>
 {
-    public static final String LAUNCHWRAPPER_ID = "net.minecraft:launchwrapper";
-    
     public static final String CONFIG_LL_DEOBF_COMPILE = "liteloaderDeobfCompile";
     public static final String CONFIG_LL_DC_RESOLVED = "liteloaderResolvedDeobfCompile";
 
     public static final String MAVEN_REPO_NAME = "liteloaderRepo";
 
     public static final String MOD_EXTENSION = "litemod";
-    
-    public static final String GET_VERSION_JSON_TASK = "getLiteLoaderJson";
     
     public static final String VERSION_JSON_URL = "http://dl.liteloader.com/versions/versions.json";
     public static final String VERSION_JSON_FILENAME = "versions.json";
@@ -82,16 +78,8 @@ public class LiteloaderPlugin extends UserVanillaBasePlugin<LiteloaderExtension>
         configs.getByName(CONFIG_DC_RESOLVED).extendsFrom(configs.getByName(CONFIG_LL_DC_RESOLVED));
         
         final DelayedFile versionJson = delayedFile(VERSION_JSON_FILE);
-        EtagDownloadTask getLiteLoaderJson = makeTask(GET_VERSION_JSON_TASK, EtagDownloadTask.class);
-        {
-            getLiteLoaderJson.setUrl(delayedString(VERSION_JSON_URL));
-            getLiteLoaderJson.setFile(versionJson);
-            getLiteLoaderJson.setDieWithError(false);
-        }
-
-        tasks.getByName(TASK_SETUP_CI).dependsOn(getLiteLoaderJson);
-        tasks.getByName(TASK_SETUP_DEV).dependsOn(getLiteLoaderJson);
-        tasks.getByName(TASK_SETUP_DECOMP).dependsOn(getLiteLoaderJson);
+        final DelayedFile versionJsonEtag = delayedFile(VERSION_JSON_FILE + ".etag");
+        setJson(JsonFactory.loadLiteLoaderJson(getWithEtag(VERSION_JSON_URL, versionJson.call(), versionJsonEtag.call())));
 
         Jar jar = (Jar) tasks.getByName("jar");
         jar.setExtension(MOD_EXTENSION);
@@ -110,31 +98,13 @@ public class LiteloaderPlugin extends UserVanillaBasePlugin<LiteloaderExtension>
                 if (project.getState().getFailure() != null)
                     return;
 
-                LiteloaderPlugin.this.parseJson(delayedFile(VERSION_JSON_FILE).call());
+                propagate();
                 remapDeps(project, project.getConfigurations().getByName(CONFIG_LL_DEOBF_COMPILE), CONFIG_LL_DC_RESOLVED, compileDummy);
             }
         });
     }
     
-    void parseJson(File json)
-    {
-        if (!json.exists() || this.json != null)
-        {
-            return;
-        }
-        
-        try
-        {
-            this.setJson(JsonFactory.loadLiteLoaderJson(json));
-            this.propagate();
-        }
-        catch (IOException ex)
-        {
-            Throwables.propagate(ex);
-        }
-    }
-
-    private void propagate()
+    void propagate()
     {
         project.allprojects(new Action<Project>() {
             @Override
@@ -162,7 +132,7 @@ public class LiteloaderPlugin extends UserVanillaBasePlugin<LiteloaderExtension>
                                 String url = library.get("url");
                                 if (url != null)
                                 {
-                                    addMavenRepo(proj, "mavenRepo", url);
+                                    addMavenRepo(proj, url, url);
                                 }
                             }
                         }
@@ -180,8 +150,13 @@ public class LiteloaderPlugin extends UserVanillaBasePlugin<LiteloaderExtension>
     public void setJson(LiteLoaderJson json)
     {
         this.json = json;
+    }
+    
+    public void applyAndCheckJson()
+    {
         String mcVersion = delayedString(REPLACE_MC_VERSION).call();
-        VersionObject version = json.versions.get(mcVersion);
+        
+        VersionObject version = this.json.versions.get(mcVersion);
         if (version == null)
         {
             throw new InvalidUserDataException("No ForgeGradle-compatible LiteLoader version found for Minecraft" + mcVersion);
