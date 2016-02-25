@@ -19,22 +19,198 @@
  */
 package net.minecraftforge.gradle.user.liteloader;
 
-import net.minecraftforge.gradle.common.Constants;
-import net.minecraftforge.gradle.user.UserVanillaBasePlugin;
-
-import java.util.List;
-
 import static net.minecraftforge.gradle.common.Constants.*;
+import static net.minecraftforge.gradle.user.UserConstants.*;
+
+import com.google.common.base.Throwables;
+import net.minecraftforge.gradle.tasks.EtagDownloadTask;
+import net.minecraftforge.gradle.user.UserVanillaBasePlugin;
+import net.minecraftforge.gradle.util.delayed.DelayedFile;
+import net.minecraftforge.gradle.util.json.JsonFactory;
+import net.minecraftforge.gradle.util.json.LiteLoaderJson;
+import net.minecraftforge.gradle.util.json.LiteLoaderJson.Artifact;
+import net.minecraftforge.gradle.util.json.LiteLoaderJson.RepoObject;
+import net.minecraftforge.gradle.util.json.LiteLoaderJson.VersionObject;
+import org.gradle.api.Action;
+import org.gradle.api.InvalidUserDataException;
+import org.gradle.api.Project;
+import org.gradle.api.Task;
+import org.gradle.api.artifacts.Configuration;
+import org.gradle.api.artifacts.ConfigurationContainer;
+import org.gradle.api.artifacts.dsl.DependencyHandler;
+import org.gradle.api.plugins.JavaPlugin;
+import org.gradle.api.tasks.TaskContainer;
+import org.gradle.jvm.tasks.Jar;
+
+import java.io.File;
+import java.io.IOException;
+import java.util.List;
+import java.util.Map;
 
 public class LiteloaderPlugin extends UserVanillaBasePlugin<LiteloaderExtension>
 {
+    public static final String LAUNCHWRAPPER_ID = "net.minecraft:launchwrapper";
+    
+    public static final String CONFIG_LL_DEOBF_COMPILE = "liteloaderDeobfCompile";
+    public static final String CONFIG_LL_DC_RESOLVED = "liteloaderResolvedDeobfCompile";
+
+    public static final String MAVEN_REPO_NAME = "liteloaderRepo";
+
+    public static final String MOD_EXTENSION = "litemod";
+    
+    public static final String GET_VERSION_JSON_TASK = "getLiteLoaderJson";
+    
+    public static final String VERSION_JSON_URL = "http://dl.liteloader.com/versions/versions.json";
+    public static final String VERSION_JSON_FILENAME = "versions.json";
+    public static final String VERSION_JSON_FILE = REPLACE_CACHE_DIR + "/com/mumfrey/liteloader/" + VERSION_JSON_FILENAME;
+    
+    private LiteLoaderJson json;
+
+    private RepoObject repo;
+
+    private Artifact artifact;
+
     @Override
     protected void applyVanillaUserPlugin()
     {
-        // liteloader requires this...
-        project.getDependencies().add(Constants.CONFIG_MC_DEPS, "net.minecraft:launchwrapper:1.11");
+        final ConfigurationContainer configs = project.getConfigurations();
+        final TaskContainer tasks = project.getTasks();
+        
+        configs.maybeCreate(CONFIG_LL_DEOBF_COMPILE);
+        configs.maybeCreate(CONFIG_LL_DC_RESOLVED);
+
+        configs.getByName(CONFIG_DC_RESOLVED).extendsFrom(configs.getByName(CONFIG_LL_DC_RESOLVED));
+        
+        final DelayedFile versionJson = delayedFile(VERSION_JSON_FILE);
+        EtagDownloadTask getLiteLoaderJson = makeTask(GET_VERSION_JSON_TASK, EtagDownloadTask.class);
+        {
+            getLiteLoaderJson.setUrl(delayedString(VERSION_JSON_URL));
+            getLiteLoaderJson.setFile(versionJson);
+            getLiteLoaderJson.setDieWithError(false);
+        }
+
+        tasks.getByName(TASK_SETUP_CI).dependsOn(getLiteLoaderJson);
+        tasks.getByName(TASK_SETUP_DEV).dependsOn(getLiteLoaderJson);
+        tasks.getByName(TASK_SETUP_DECOMP).dependsOn(getLiteLoaderJson);
+
+        Jar jar = (Jar) tasks.getByName("jar");
+        jar.setExtension(MOD_EXTENSION);
+    }
+    
+    @Override
+    protected void setupDevTimeDeobf(final Task compileDummy, final Task providedDummy)
+    {
+        super.setupDevTimeDeobf(compileDummy, providedDummy);
+        
+        // die with error if I find invalid types...
+        project.afterEvaluate(new Action<Project>() {
+            @Override
+            public void execute(Project project)
+            {
+                if (project.getState().getFailure() != null)
+                    return;
+
+                LiteloaderPlugin.this.parseJson(delayedFile(VERSION_JSON_FILE).call());
+                remapDeps(project, project.getConfigurations().getByName(CONFIG_LL_DEOBF_COMPILE), CONFIG_LL_DC_RESOLVED, compileDummy);
+            }
+        });
+    }
+    
+    void parseJson(File json)
+    {
+        if (!json.exists() || this.json != null)
+        {
+            return;
+        }
+        
+        try
+        {
+            this.setJson(JsonFactory.loadLiteLoaderJson(json));
+            this.propagate();
+        }
+        catch (IOException ex)
+        {
+            Throwables.propagate(ex);
+        }
     }
 
+    private void propagate()
+    {
+        project.allprojects(new Action<Project>() {
+            @Override
+            public void execute(Project proj)
+            {
+                RepoObject repo = LiteloaderPlugin.this.getRepo();
+                if (repo != null)
+                {
+                    addMavenRepo(proj, MAVEN_REPO_NAME, repo.url);
+                    
+                    Artifact artifact = LiteloaderPlugin.this.getArtifact();
+                    if (artifact != null)
+                    {
+                        proj.getDependencies().add(CONFIG_LL_DEOBF_COMPILE, artifact.getDepString(repo));
+                        if (artifact.libraries != null)
+                        {
+                            for (Map<String, String> library : artifact.libraries)
+                            {
+                                String name = library.get("name");
+                                if (name != null)
+                                {
+                                    proj.getDependencies().add(CONFIG_MC_DEPS, name);
+                                }
+                                
+                                String url = library.get("url");
+                                if (url != null)
+                                {
+                                    addMavenRepo(proj, "mavenRepo", url);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    public LiteLoaderJson getJson()
+    {
+        return this.json;
+    }
+    
+    public void setJson(LiteLoaderJson json)
+    {
+        this.json = json;
+        String mcVersion = delayedString(REPLACE_MC_VERSION).call();
+        VersionObject version = json.versions.get(mcVersion);
+        if (version == null)
+        {
+            throw new InvalidUserDataException("No ForgeGradle-compatible LiteLoader version found for Minecraft" + mcVersion);
+        }
+        
+        this.setRepo(version.repo);
+        this.setArtifact(version.latest);
+    }
+    
+    public RepoObject getRepo()
+    {
+        return this.repo;
+    }
+    
+    public void setRepo(RepoObject repo)
+    {
+        this.repo = repo;
+    }
+    
+    public Artifact getArtifact()
+    {
+        return this.artifact;
+    }
+    
+    public void setArtifact(Artifact artifact)
+    {
+        this.artifact = artifact;
+    }
+    
     @Override
     protected String getJarName()
     {

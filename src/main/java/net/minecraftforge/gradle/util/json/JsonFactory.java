@@ -107,7 +107,7 @@ public class JsonFactory
     public static LiteLoaderJson loadLiteLoaderJson(File json) throws JsonSyntaxException, JsonIOException, IOException
     {
         FileReader reader = new FileReader(json);
-        LiteLoaderJson a = GSON.fromJson(reader, LiteLoaderJson.class);
+        LiteLoaderJson a = GSON.fromJson(reader, LiteLoaderJson.class).addDefaultArtifacts();
         reader.close();
         return a;
     }
