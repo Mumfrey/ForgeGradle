@@ -68,11 +68,16 @@ public class LiteloaderPlugin extends UserVanillaBasePlugin<LiteloaderExtension>
     @Override
     protected void applyVanillaUserPlugin()
     {
-        final ConfigurationContainer configs = this.project.getConfigurations();
-        configs.maybeCreate(CONFIG_LL_DEOBF_COMPILE);
-        configs.maybeCreate(CONFIG_LL_DC_RESOLVED);
-
-        configs.getByName(CONFIG_DC_RESOLVED).extendsFrom(configs.getByName(CONFIG_LL_DC_RESOLVED));
+        this.project.allprojects(new Action<Project>() {
+            @Override
+            public void execute(Project proj)
+            {
+                final ConfigurationContainer configs = proj.getConfigurations();
+                configs.maybeCreate(CONFIG_LL_DEOBF_COMPILE);
+                configs.maybeCreate(CONFIG_LL_DC_RESOLVED);
+                configs.getByName(CONFIG_DC_RESOLVED).extendsFrom(configs.getByName(CONFIG_LL_DC_RESOLVED));
+            }
+        });
         
         final DelayedFile versionJson = delayedFile(VERSION_JSON_FILE);
         final DelayedFile versionJsonEtag = delayedFile(VERSION_JSON_FILE + ".etag");
